@@ -1,0 +1,28 @@
+name: seed-weights
+
+resources:
+  cloud: gcp
+  region: us-central1
+  cpus: 8
+  memory: 32
+  disk_size: 1000
+  use_spot: true
+  # No GPUs — costs ~$0.30/hr instead of $26/hr
+
+
+run: |
+  set -e
+  pip install huggingface_hub
+
+  LOCAL=/tmp/kimi-k2-5
+  echo "Downloading Kimi K2.5 weights to local disk..."
+  python -c "
+  from huggingface_hub import snapshot_download
+  snapshot_download('moonshotai/Kimi-K2.5', local_dir='$LOCAL')
+  "
+
+  echo "Uploading to GCS bucket via gsutil (parallel, no FUSE)..."
+  BUCKET=kimi-k2-5-weights
+  gsutil -m cp -r $LOCAL/* gs://$BUCKET/Kimi-K2.5/
+  gsutil cp /dev/null gs://$BUCKET/.download_complete
+  echo "Done. GCS bucket seeded. Future GPU launches will skip the download."

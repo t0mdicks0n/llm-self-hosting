@@ -1,0 +1,48 @@
+name: kimi-k2-5-int4
+
+resources:
+  cloud: gcp
+  accelerators: {A100-80GB:8, H100:8}
+  use_spot: true
+  disk_size: 800
+
+file_mounts:
+  /models:
+    name: kimi-k2-5-weights-int4
+    store: gcs
+    mode: MOUNT
+
+setup: |
+  set -e
+
+  # Install vLLM and dependencies
+  pip install vllm --upgrade
+  pip install flash-attn --no-build-isolation
+
+  # Download INT4 quantized model weights
+  if [ ! -f /models/.download_complete ]; then
+    echo "Downloading Kimi K2.5 NVFP4 quantized weights..."
+    python -c "
+  from huggingface_hub import snapshot_download
+  snapshot_download('nvidia/Kimi-K2.5-NVFP4', local_dir='/models/Kimi-K2.5-NVFP4')
+  "
+    touch /models/.download_complete
+    echo "Download complete."
+  else
+    echo "Model weights already cached, skipping download."
+  fi
+
+run: |
+  echo "Starting vLLM server for Kimi K2.5 (INT4 quantized)..."
+  echo "GPUs available: $SKYPILOT_NUM_GPUS_PER_NODE"
+  nvidia-smi
+
+  vllm serve nvidia/Kimi-K2.5-NVFP4 \
+    --model /models/Kimi-K2.5-NVFP4 \
+    -tp $SKYPILOT_NUM_GPUS_PER_NODE \
+    --mm-encoder-tp-mode data \
+    --tool-call-parser kimi_k2 \
+    --reasoning-parser kimi_k2 \
+    --trust-remote-code \
+    --host 0.0.0.0 \
+    --port 8000

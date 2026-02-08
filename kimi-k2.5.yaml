@@ -1,0 +1,54 @@
+name: kimi-k2-5
+
+resources:
+  cloud: gcp
+  region: us-central1
+  accelerators: {H100:8, A100-80GB:8}
+  use_spot: true
+  disk_size: 1000
+
+
+setup: |
+  set -e
+
+  # Install vLLM and dependencies
+  pip install vllm --upgrade
+  pip install flash-attn --no-build-isolation
+
+  # Download model weights to LOCAL disk (fast), not GCS FUSE mount (slow)
+  # Check GCS cache first for subsequent launches
+  LOCAL_MODEL=/home/gcpuser/Kimi-K2.5
+
+  BUCKET=kimi-k2-5-weights
+
+  if gsutil -q stat gs://$BUCKET/.download_complete 2>/dev/null; then
+    echo "Model weights cached in GCS. Downloading to local disk via gsutil..."
+    mkdir -p $LOCAL_MODEL
+    gsutil -m cp -r gs://$BUCKET/Kimi-K2.5/* $LOCAL_MODEL/
+    echo "Copy from GCS complete."
+  else
+    echo "Downloading Kimi K2.5 model weights to local disk (~595GB)..."
+    python -c "
+  from huggingface_hub import snapshot_download
+  snapshot_download('moonshotai/Kimi-K2.5', local_dir='$LOCAL_MODEL')
+  "
+    echo "Download complete. Uploading to GCS cache for future launches..."
+    gsutil -m cp -r $LOCAL_MODEL/* gs://$BUCKET/Kimi-K2.5/ && gsutil cp /dev/null gs://$BUCKET/.download_complete &
+    echo "GCS sync started in background."
+  fi
+
+run: |
+  echo "Starting vLLM server for Kimi K2.5..."
+  echo "GPUs available: $SKYPILOT_NUM_GPUS_PER_NODE"
+  nvidia-smi
+
+  LOCAL_MODEL=/home/gcpuser/Kimi-K2.5
+
+  vllm serve $LOCAL_MODEL \
+    -tp $SKYPILOT_NUM_GPUS_PER_NODE \
+    --mm-encoder-tp-mode data \
+    --tool-call-parser kimi_k2 \
+    --reasoning-parser kimi_k2 \
+    --trust-remote-code \
+    --host 0.0.0.0 \
+    --port 8000
