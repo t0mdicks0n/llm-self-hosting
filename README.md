@@ -19,14 +19,28 @@ pip install "skypilot[gcp]"
 sky check   # Verify GCP credentials are working
 ```
 
-### 2. Launch Kimi K2.5
+### 2. Seed Model Weights (First Time Only)
+
+The model is ~595GB. SkyPilot's default GCS FUSE mount is unusably slow for files this large (1+ hours for both reads and writes). Instead, we pre-seed a GCS bucket using a cheap CPU-only VM (~$0.30/hr), then GPU launches pull via `gsutil` which gets ~1.2 GiB/s:
+
+```bash
+sky launch -c seed seed-weights.yaml --idle-minutes-to-autostop 60 --down --detach-run
+```
+
+This downloads the weights from HuggingFace to local disk, then uploads to GCS via `gsutil`. Takes ~30 min total. You can disconnect — the job runs detached on the VM.
+
+Monitor progress: `sky logs seed`
+
+Once complete, the GCS bucket is seeded and all future GPU launches pull from there instead of HuggingFace.
+
+### 3. Launch Kimi K2.5
 
 ```bash
 # Full precision (595GB model, 8x A100-80GB or H100, spot instances)
-sky launch -c kimi kimi-k2.5.yaml --idle-minutes-to-autostop 20 --down
+sky launch -c kimi kimi-k2.5.yaml --idle-minutes-to-autostop 20 --down --detach-run
 
 # OR INT4 quantized (smaller, ~2x faster inference)
-sky launch -c kimi kimi-k2.5-int4.yaml --idle-minutes-to-autostop 20 --down
+sky launch -c kimi kimi-k2.5-int4.yaml --idle-minutes-to-autostop 20 --down --detach-run
 ```
 
 Flags:
@@ -34,7 +48,7 @@ Flags:
 - `--idle-minutes-to-autostop 20` auto-shuts down 20 min after SSH disconnects
 - `--down` deletes the instance (not just stops it) to avoid any lingering costs
 
-### 3. Connect
+### 4. Connect
 
 **Terminal:**
 ```bash
@@ -47,7 +61,7 @@ sky ssh kimi
 3. Select "kimi" from the list (SkyPilot auto-configures your SSH config)
 4. Open the terminal and run commands on the GPU instance
 
-### 4. Test the Endpoint
+### 5. Test the Endpoint
 
 Once connected via SSH:
 ```bash
@@ -64,7 +78,7 @@ python scripts/test_inference.py
 python scripts/benchmark.py --rounds 3 --concurrent 2
 ```
 
-### 5. Tear Down
+### 6. Tear Down
 
 ```bash
 sky down kimi                  # Immediate teardown
@@ -77,6 +91,7 @@ sky down kimi                  # Immediate teardown
 |---|---|---|---|
 | `kimi-k2.5.yaml` | Kimi K2.5 (1T MoE) | 8x A100-80GB / H100 | Full precision, spot |
 | `kimi-k2.5-int4.yaml` | Kimi K2.5 NVFP4 | 8x A100-80GB / H100 | INT4 quantized, ~2x faster |
+| `seed-weights.yaml` | — | CPU only | Seeds GCS bucket with model weights (~$0.30/hr) |
 
 ## Useful SkyPilot Commands
 
@@ -97,7 +112,7 @@ sky cost-report         # View cost history
 | 8x A100-80GB (GCP spot) | ~$20/hr | ~$40 |
 | 8x H100 (GCP spot) | ~$26/hr | ~$52 |
 
-First session takes longer due to ~595GB model download.
+Cold start is ~20 min (GCS copy + weight loading). Seed the GCS bucket first (step 2) to avoid downloading from HuggingFace on GPU time.
 
 ### Self-hosted vs. Gemini 3.0 Pro API
 
@@ -204,8 +219,8 @@ gcloud auth application-default login
 **No spot capacity:**
 Remove `use_spot: true` from the YAML to use on-demand (more expensive but always available).
 
-**Model download too slow:**
-The GCS bucket mount caches weights across sessions. First download is slow (~15-20 min), subsequent launches skip it.
+**Cold start too slow (~20 min):**
+This is the time to copy ~595GB from GCS to local disk + load into GPU memory. It's unavoidable for this model size. Make sure you've seeded the GCS bucket first (step 2) — without it, the GPU VM downloads from HuggingFace directly which is even slower and wastes GPU time.
 
 **Fallback to RunPod/Vast.ai:**
 ```bash

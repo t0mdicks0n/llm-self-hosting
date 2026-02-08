@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 def single_request(base_url: str, prompt: str, max_tokens: int = 128) -> dict:
     """Send one request and measure timing."""
     payload = json.dumps({
-        "model": "moonshotai/Kimi-K2.5",
+        "model": "Kimi-K2.5",
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
         "temperature": 0.0,

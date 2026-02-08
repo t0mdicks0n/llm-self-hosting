@@ -31,7 +31,7 @@ def check_health(base_url: str) -> bool:
 def run_inference(base_url: str, prompt: str, max_tokens: int = 256) -> dict:
     """Send a chat completion request and return the response."""
     payload = json.dumps({
-        "model": "moonshotai/Kimi-K2.5",
+        "model": "Kimi-K2.5",
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
         "temperature": 0.7,

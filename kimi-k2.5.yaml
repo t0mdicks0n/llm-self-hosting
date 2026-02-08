@@ -6,19 +6,20 @@ resources:
   accelerators: {H100:8, A100-80GB:8}
   use_spot: true
   disk_size: 1000
-
+  image_id: projects/deeplearning-platform-release/global/images/family/pytorch-2-7-cu128-ubuntu-2204-nvidia-570
 
 setup: |
   set -e
 
-  # Install vLLM and dependencies
-  pip install vllm --upgrade
+  # Install vLLM with CUDA 12.8 wheels to match the VM image (driver 570).
+  # Default pip install pulls cu129 which fails on driver 570.
+  pip install uv
+  uv pip install vllm --torch-backend=cu128
   pip install flash-attn --no-build-isolation
 
-  # Download model weights to LOCAL disk (fast), not GCS FUSE mount (slow)
+  # Download model weights to local disk (fast), not GCS FUSE mount (slow)
   # Check GCS cache first for subsequent launches
-  LOCAL_MODEL=/home/gcpuser/Kimi-K2.5
-
+  LOCAL_MODEL=$HOME/Kimi-K2.5
   BUCKET=kimi-k2-5-weights
 
   if gsutil -q stat gs://$BUCKET/.download_complete 2>/dev/null; then
@@ -29,9 +30,9 @@ setup: |
   else
     echo "Downloading Kimi K2.5 model weights to local disk (~595GB)..."
     python -c "
-  from huggingface_hub import snapshot_download
-  snapshot_download('moonshotai/Kimi-K2.5', local_dir='$LOCAL_MODEL')
-  "
+from huggingface_hub import snapshot_download
+snapshot_download('moonshotai/Kimi-K2.5', local_dir='$LOCAL_MODEL')
+"
     echo "Download complete. Uploading to GCS cache for future launches..."
     gsutil -m cp -r $LOCAL_MODEL/* gs://$BUCKET/Kimi-K2.5/ && gsutil cp /dev/null gs://$BUCKET/.download_complete &
     echo "GCS sync started in background."
@@ -42,10 +43,11 @@ run: |
   echo "GPUs available: $SKYPILOT_NUM_GPUS_PER_NODE"
   nvidia-smi
 
-  LOCAL_MODEL=/home/gcpuser/Kimi-K2.5
+  LOCAL_MODEL=$HOME/Kimi-K2.5
 
   vllm serve $LOCAL_MODEL \
     -tp $SKYPILOT_NUM_GPUS_PER_NODE \
+    --served-model-name Kimi-K2.5 \
     --mm-encoder-tp-mode data \
     --tool-call-parser kimi_k2 \
     --reasoning-parser kimi_k2 \
