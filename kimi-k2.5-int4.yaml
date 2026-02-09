@@ -2,34 +2,65 @@ name: kimi-k2-5-int4
 
 resources:
   cloud: gcp
-  accelerators: {A100-80GB:8, H100:8}
+  region: us-central1
+  accelerators: {H100:8, A100-80GB:8}
   use_spot: true
   disk_size: 800
-
-file_mounts:
-  /models:
-    name: kimi-k2-5-weights-int4
-    store: gcs
-    mode: MOUNT
+  image_id: projects/deeplearning-platform-release/global/images/pytorch-2-7-cu128-ubuntu-2204-nvidia-570-v20260129
 
 setup: |
   set -e
 
-  # Install vLLM and dependencies
-  pip install vllm --upgrade
+  # Upgrade NVIDIA driver from 570 to 580 (required for Marlin CUDA kernels).
+  # Driver 570 lacks PTX support for Marlin MoE quantization ops.
+  # Package nvidia-driver-575-server installs driver branch 575 → version 580.126.09.
+  sudo apt-get update -qq
+  sudo apt-get install -y nvidia-driver-575-server --no-install-recommends
+
+  # Reload driver kernel modules without rebooting.
+  # Safe during setup — no GPU workloads are running yet.
+  sudo systemctl stop nvidia-fabricmanager 2>/dev/null || true
+  sudo systemctl stop nvidia-persistenced 2>/dev/null || true
+  sudo rmmod nvidia_uvm nvidia_drm nvidia_modeset nvidia 2>/dev/null || true
+  sudo modprobe nvidia
+  sudo modprobe nvidia_uvm
+  sudo systemctl start nvidia-persistenced
+  sudo systemctl start nvidia-fabricmanager
+  echo "Driver version: $(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1)"
+
+  # Remove GCP's GIB (GPU Interconnect Bridge) libraries entirely.
+  # GIB is for multi-node InfiniBand; on single-node it breaks NCCL P2P/NVSwitch.
+  # Stripping LD_LIBRARY_PATH alone is not enough — NCCL loads plugins via ldconfig.
+  sudo rm -rf /usr/local/gib
+  sudo rm -f /etc/ld.so.conf.d/*gib*
+  sudo ldconfig
+
+  # Install vLLM with CUDA 12.8 wheels to match the VM image
+  pip install uv
+  uv pip install --system vllm --torch-backend=cu128
   pip install flash-attn --no-build-isolation
 
-  # Download INT4 quantized model weights
-  if [ ! -f /models/.download_complete ]; then
+  # Pin NCCL version that is confirmed working with this driver/vLLM combo
+  pip install nvidia-nccl-cu12==2.29.3
+
+  # Download INT4 quantized model weights to local disk
+  LOCAL_MODEL=$HOME/Kimi-K2.5-NVFP4
+  BUCKET=kimi-k2-5-weights-int4
+
+  if gsutil -q stat gs://$BUCKET/.download_complete 2>/dev/null; then
+    echo "Model weights cached in GCS. Downloading to local disk via gsutil..."
+    mkdir -p $LOCAL_MODEL
+    gsutil -m cp -r gs://$BUCKET/Kimi-K2.5-NVFP4/* $LOCAL_MODEL/
+    echo "Copy from GCS complete."
+  else
     echo "Downloading Kimi K2.5 NVFP4 quantized weights..."
     python -c "
   from huggingface_hub import snapshot_download
-  snapshot_download('nvidia/Kimi-K2.5-NVFP4', local_dir='/models/Kimi-K2.5-NVFP4')
+  snapshot_download('nvidia/Kimi-K2.5-NVFP4', local_dir='$LOCAL_MODEL')
   "
-    touch /models/.download_complete
-    echo "Download complete."
-  else
-    echo "Model weights already cached, skipping download."
+    echo "Download complete. Uploading to GCS cache for future launches..."
+    gsutil -m cp -r $LOCAL_MODEL/* gs://$BUCKET/Kimi-K2.5-NVFP4/ && gsutil cp /dev/null gs://$BUCKET/.download_complete &
+    echo "GCS sync started in background."
   fi
 
 run: |
@@ -37,12 +68,17 @@ run: |
   echo "GPUs available: $SKYPILOT_NUM_GPUS_PER_NODE"
   nvidia-smi
 
-  vllm serve nvidia/Kimi-K2.5-NVFP4 \
-    --model /models/Kimi-K2.5-NVFP4 \
+  LOCAL_MODEL=$HOME/Kimi-K2.5-NVFP4
+
+  vllm serve $LOCAL_MODEL \
     -tp $SKYPILOT_NUM_GPUS_PER_NODE \
+    --served-model-name Kimi-K2.5 \
     --mm-encoder-tp-mode data \
     --tool-call-parser kimi_k2 \
     --reasoning-parser kimi_k2 \
     --trust-remote-code \
+    --gpu-memory-utilization 0.95 \
+    --max-num-seqs 64 \
+    --max-model-len 32768 \
     --host 0.0.0.0 \
     --port 8000

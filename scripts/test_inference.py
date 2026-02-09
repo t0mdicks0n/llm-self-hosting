@@ -28,7 +28,7 @@ def check_health(base_url: str) -> bool:
         return False
 
 
-def run_inference(base_url: str, prompt: str, max_tokens: int = 256) -> dict:
+def run_inference(base_url: str, prompt: str, max_tokens: int = 1024) -> dict:
     """Send a chat completion request and return the response."""
     payload = json.dumps({
         "model": "Kimi-K2.5",
@@ -81,7 +81,8 @@ def main():
         print(f"Prompt: {prompt}")
         try:
             result = run_inference(base_url, prompt)
-            print(f"Response: {result['response'][:500]}")
+            response = result['response'] or "(empty - reasoning tokens may have consumed the budget)"
+            print(f"Response: {response[:500]}")
             print(f"Tokens: {result['usage']}")
             print(f"Time: {result['elapsed_seconds']}s")
         except Exception as e:

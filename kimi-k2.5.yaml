@@ -11,11 +11,37 @@ resources:
 setup: |
   set -e
 
-  # Install vLLM with CUDA 12.8 wheels to match the VM image (driver 570).
-  # Default pip install pulls cu129 which fails on driver 570.
+  # Upgrade NVIDIA driver from 570 to 580 (required for Marlin CUDA kernels).
+  # Driver 570 lacks PTX support for Marlin MoE quantization ops.
+  # Package nvidia-driver-575-server installs driver branch 575 → version 580.126.09.
+  sudo apt-get update -qq
+  sudo apt-get install -y nvidia-driver-575-server --no-install-recommends
+
+  # Reload driver kernel modules without rebooting.
+  # Safe during setup — no GPU workloads are running yet.
+  sudo systemctl stop nvidia-fabricmanager 2>/dev/null || true
+  sudo systemctl stop nvidia-persistenced 2>/dev/null || true
+  sudo rmmod nvidia_uvm nvidia_drm nvidia_modeset nvidia 2>/dev/null || true
+  sudo modprobe nvidia
+  sudo modprobe nvidia_uvm
+  sudo systemctl start nvidia-persistenced
+  sudo systemctl start nvidia-fabricmanager
+  echo "Driver version: $(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1)"
+
+  # Remove GCP's GIB (GPU Interconnect Bridge) libraries entirely.
+  # GIB is for multi-node InfiniBand; on single-node it breaks NCCL P2P/NVSwitch.
+  # Stripping LD_LIBRARY_PATH alone is not enough — NCCL loads plugins via ldconfig.
+  sudo rm -rf /usr/local/gib
+  sudo rm -f /etc/ld.so.conf.d/*gib*
+  sudo ldconfig
+
+  # Install vLLM with CUDA 12.8 wheels to match the VM image
   pip install uv
   uv pip install --system vllm --torch-backend=cu128
   pip install flash-attn --no-build-isolation
+
+  # Pin NCCL version that is confirmed working with this driver/vLLM combo
+  pip install nvidia-nccl-cu12==2.29.3
 
   # Download model weights to local disk (fast), not GCS FUSE mount (slow)
   # Check GCS cache first for subsequent launches
@@ -43,12 +69,6 @@ run: |
   echo "GPUs available: $SKYPILOT_NUM_GPUS_PER_NODE"
   nvidia-smi
 
-  # GCP a3-highgpu-8g VM images ship with GIB (GPU Interconnect Bridge) libs
-  # in LD_LIBRARY_PATH. GIB is for multi-node InfiniBand communication.
-  # On single-node, the GIB NCCL shim plugin interferes with P2P/NVSwitch init.
-  # Remove it so NCCL auto-detects P2P over NVLink/NVSwitch natively.
-  export LD_LIBRARY_PATH=$(echo "$LD_LIBRARY_PATH" | tr ':' '\n' | grep -v gib | paste -sd ':')
-
   LOCAL_MODEL=$HOME/Kimi-K2.5
 
   vllm serve $LOCAL_MODEL \
@@ -58,5 +78,8 @@ run: |
     --tool-call-parser kimi_k2 \
     --reasoning-parser kimi_k2 \
     --trust-remote-code \
+    --gpu-memory-utilization 0.95 \
+    --max-num-seqs 64 \
+    --max-model-len 8192 \
     --host 0.0.0.0 \
     --port 8000
