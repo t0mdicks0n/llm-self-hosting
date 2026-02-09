@@ -44,6 +44,7 @@ For pure cost, no. At typical R&D usage (1-2 concurrent requests), self-hosting 
 - [notes/kimi-k2.5-setup-log.md](notes/kimi-k2.5-setup-log.md) — Every issue we hit and how we fixed it, plus full VM bash history
 - [notes/kimi-k2.5-benchmark-results.md](notes/kimi-k2.5-benchmark-results.md) — Performance measurements on 8xH100
 - [notes/why-this-is-so-painful.md](notes/why-this-is-so-painful.md) — Honest analysis of all 12 issues and why MLOps is so flaky
+- [Self-hosted vs. API economics](#self-hosted-vs-gemini-30-pro-api) — Cost comparison with Gemini 3.0 Pro API
 
 ---
 
